@@ -596,7 +596,7 @@ def find_certificate_for_creator(creator_id):
 # Routes
 # ---------------------------------------------------------------------------
 @app.route("/submit", methods=["POST"])
-@limiter.limit("10 per minute")
+@limiter.limit("10 per minute; 100 per day")
 def submit():
     """Validate a submission, run all four signals, score, log, and respond."""
     body = request.get_json(silent=True)

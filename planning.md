@@ -940,39 +940,289 @@ I will verify Claude's generated code by checking that:
 9. The audit log includes both classification and appeal events.
 10. Certificate and analytics endpoints return structured JSON.
 
-### Stretch Feature AI Plan
-
-The stretch features will be implemented only after the required pipeline is working end-to-end.
-
-#### Ensemble Detection
-I will ask Claude to help refine the four-signal ensemble, but I will manually verify that the weighting formula and thresholds match this planning document.
-
-#### Provenance Certificate
-
-I will ask Claude to generate certificate-related route handlers and data structures. I will verify that the certificate reduces false-positive risk without automatically overriding the classification result.
-
-#### Analytics Dashboard
-
-I will ask Claude to generate simple analytics calculations from content records and audit events. I will verify that the dashboard reports detection patterns, appeal rate, and average confidence.
-
-#### Multi-modal Support
-
-I will ask Claude to extend `/submit` so it can route both `text` and `metadata` content types. I will verify that unsupported content types return structured errors and that metadata submissions are logged correctly.
-
 ## Stretch Feature Planning
+
+The project includes four stretch features: ensemble detection, provenance certificates, an analytics dashboard, and multi-modal support through structured metadata. These features extend the required backend into a stronger provenance system that is easier to audit, explain, and demo.
 
 ### Stretch 1: Ensemble Detection
 
-To be updated before implementation.
+The system uses a four-signal ensemble instead of relying on one AI detector. This stretch feature is already implemented in the detection pipeline.
+
+The four signals are:
+
+1. Groq LLM classification
+2. Stylometric heuristics
+3. Repetition and template pattern detection
+4. Provenance metadata scoring
+
+Each signal produces an AI-likelihood score from `0.0` to `1.0`.
+
+- `0.0` means the signal strongly suggests human authorship.
+- `0.5` means the signal is uncertain.
+- `1.0` means the signal strongly suggests AI generation.
+
+The weighted scoring formula is:
+
+```text
+combined_ai_score =
+  (llm_score * 0.40) +
+  (stylometric_score * 0.30) +
+  (template_score * 0.20) +
+  (provenance_score * 0.10)
+```
+
+The weights are intentionally uneven. The LLM signal receives the highest weight because it can reason across broad writing patterns. The stylometric signal receives the second-highest weight because it provides structural evidence from the text itself. The template signal captures formulaic and repetitive patterns. The provenance signal is weighted lower because it should support the decision, especially when metadata is available, but it should not automatically override every other signal.
+
+The ensemble approach makes the system more explainable because the API response and audit log can show which signals contributed to the final confidence score.
+
+Implementation status: complete.
+
+Implemented in the backend through:
+
+```text
+classify_with_groq(text)
+classify_with_stylometrics(text)
+detect_template_patterns(text)
+score_provenance_metadata(metadata)
+calculate_combined_score(...)
+determine_attribution(...)
+```
+
+Verification plan:
+
+- Confirm that `/submit` returns all four signal scores.
+- Confirm that the final confidence score changes across different submissions.
+- Confirm that the attribution result maps to the documented thresholds.
+- Confirm that the audit log stores the individual signal scores and final confidence score.
 
 ### Stretch 2: Provenance Certificate
 
-To be updated before implementation.
+The system includes a verified human provenance certificate feature. A creator can receive a verified human certificate through an additional verification step.
+
+The certificate flow uses:
+
+```text
+POST /verify-human
+```
+
+Expected request fields include:
+
+- `creator_id`
+- `verification_method`
+- `reviewer_id`
+- optional `notes`
+
+Supported verification methods are:
+
+- `manual_review`
+- `institutional_email`
+- `portfolio_review`
+
+When verification succeeds, the system creates a `certificate_id`, marks the creator as `verified_human: true`, and writes a `human_verified` event to the audit log.
+
+The system also includes:
+
+```text
+GET /certificate/<creator_id>
+```
+
+This endpoint looks up the most recent verified human certificate for a creator.
+
+When a verified creator submits content through `/submit`, the response includes certificate information, and the transparency label receives this add-on sentence:
+
+```text
+This creator has a verified human provenance certificate on record.
+```
+
+The certificate does not automatically force the final classification to `likely_human`. This is intentional. A verified human creator may still submit AI-assisted content. The certificate gives readers extra provenance context, but the system still preserves the classification result from the ensemble.
+
+Implementation status: complete.
+
+Implemented in the backend through:
+
+```text
+POST /verify-human
+GET /certificate/<creator_id>
+find_certificate_for_creator(creator_id)
+generate_transparency_label(..., verified_human=True)
+```
+
+Verification plan:
+
+- Confirm that `POST /verify-human` creates a certificate.
+- Confirm that `GET /certificate/<creator_id>` retrieves the certificate.
+- Confirm that `/submit` includes certificate information for verified creators.
+- Confirm that the label includes the certificate add-on sentence.
+- Confirm that the certificate event is written to the audit log.
 
 ### Stretch 3: Analytics Dashboard
 
-To be updated before implementation.
+The system includes a machine-readable analytics endpoint and will include a visual dashboard page for easier demo and review.
 
-### Stretch 4: Multi-modal Support
+The existing endpoint is:
 
-To be updated before implementation.
+```text
+GET /analytics
+```
+
+It reads from the audit log and returns structured JSON with:
+
+- total submissions
+- attribution counts
+- average confidence score
+- appeal count
+- appeal status counts
+- verified creator count
+- average signal scores for the four detection signals
+
+To make the analytics easier to understand during the project demo, I will add a visual Flask dashboard route:
+
+```text
+GET /dashboard
+```
+
+The dashboard will read from the same audit log and display:
+
+- summary cards for total submissions, average confidence, appeal count, and verified creators
+- attribution counts for `likely_human`, `uncertain`, and `likely_ai`
+- appeal status counts for `under_review`, `approved`, `rejected`, and `needs_more_info`
+- average signal scores for LLM, stylometric, template, and provenance signals
+- a recent audit-events table showing recent submissions, appeals, reviews, and certificate events
+
+I am choosing a Flask dashboard instead of Gradio because the project is already a Flask backend. Keeping the dashboard inside Flask avoids adding another dependency, keeps the project easier to run, and makes the walkthrough simpler because everything works from one server.
+
+This dashboard satisfies the analytics dashboard stretch feature because it shows detection patterns, appeal rates/statuses, and additional metrics such as average confidence and verified creator count.
+
+Implementation status: partially complete.
+
+Already implemented:
+
+```text
+GET /analytics
+```
+
+Still to implement:
+
+```text
+GET /dashboard
+```
+
+Verification plan:
+
+- Confirm that `GET /analytics` returns aggregate metrics as JSON.
+- Confirm that `GET /dashboard` opens in the browser.
+- Confirm that the dashboard displays detection patterns.
+- Confirm that the dashboard displays appeal counts or appeal status counts.
+- Confirm that the dashboard displays at least one additional metric, such as average confidence or verified creator count.
+
+### Stretch 4: Multi-Modal Support Through Structured Metadata
+
+The system will support a second content type beyond plain text:
+
+```text
+content_type: "metadata"
+```
+
+For this project, metadata means structured authorship and provenance information submitted as JSON. This is a lightweight multi-modal extension because the system is no longer limited to analyzing raw text. It can also evaluate structured information about how content was created.
+
+A metadata submission may include fields such as:
+
+- `title`
+- `description`
+- `declared_ai_assistance`
+- `ai_generated_draft`
+- `ai_tool_used`
+- `verified_human`
+- `has_version_history`
+- `draft_count`
+- `revision_count`
+- `time_spent_minutes`
+
+The API will convert the structured metadata into a readable summary and send that summary through the same ensemble pipeline. The provenance metadata signal will also use the structured fields directly.
+
+This second content type is intentionally based on structured metadata instead of image upload. The project is about provenance and authorship decisions, not computer vision. Structured metadata is easier to validate, easier to test, and more directly connected to the question of whether a creator has evidence about how the content was made.
+
+The expected request shape will be:
+
+```json
+{
+  "creator_id": "creator-123",
+  "content_type": "metadata",
+  "metadata": {
+    "title": "Short Film Poster Caption",
+    "description": "A caption describing the poster and how it was made.",
+    "declared_ai_assistance": true,
+    "ai_generated_draft": true,
+    "ai_tool_used": "AI writing assistant",
+    "verified_human": false,
+    "has_version_history": true,
+    "draft_count": 2,
+    "revision_count": 3,
+    "time_spent_minutes": 40
+  }
+}
+```
+
+The expected response should use the same response structure as text submissions:
+
+```json
+{
+  "content_id": "content-123",
+  "creator_id": "creator-123",
+  "content_type": "metadata",
+  "attribution": "uncertain",
+  "confidence": 0.58,
+  "label": "Provenance Guard could not confidently determine whether this content was human-written or AI-generated. The available signals are mixed, so this result should be treated as uncertain.",
+  "signals": {
+    "llm_score": 0.6,
+    "stylometric_score": 0.5,
+    "template_score": 0.5,
+    "provenance_score": 0.7
+  },
+  "status": "classified"
+}
+```
+
+The audit log should record metadata submissions the same way it records text submissions, including:
+
+- timestamp
+- content ID
+- creator ID
+- content type
+- attribution result
+- confidence score
+- label
+- individual signal scores
+- provenance summary
+- status
+
+Implementation status: not complete yet.
+
+Still to implement:
+
+```text
+content_type: "metadata"
+metadata-to-summary helper
+metadata validation in /submit
+metadata submission test
+metadata audit-log evidence
+```
+
+Verification plan:
+
+- Confirm that `/submit` accepts `content_type: "metadata"`.
+- Confirm that metadata requests require a valid JSON `metadata` object.
+- Confirm that unsupported content types still return structured errors.
+- Confirm that the metadata submission returns a normal classification response.
+- Confirm that the audit log records the metadata submission with `content_type: "metadata"`.
+
+### Stretch Feature Verification Plan
+
+Before the final README is written, I will verify the stretch features as follows:
+
+1. **Ensemble detection:** Confirm that `/submit` returns all four signal scores and a weighted confidence score.
+2. **Provenance certificate:** Confirm that `POST /verify-human` creates a certificate and that `GET /certificate/<creator_id>` retrieves it.
+3. **Certificate-aware labels:** Confirm that a verified creator's `/submit` response includes certificate information and appends the certificate sentence to the label.
+4. **Analytics dashboard:** Confirm that `GET /analytics` returns aggregate metrics and that `GET /dashboard` displays those metrics visually in the browser.
+5. **Multi-modal metadata support:** Confirm that `/submit` accepts `content_type: "metadata"` and returns a normal classification response.
+6. **Audit log:** Confirm that text submissions, metadata submissions, appeals, review decisions, and certificate events are all written as structured JSON audit entries.
