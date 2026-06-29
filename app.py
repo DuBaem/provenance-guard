@@ -38,7 +38,7 @@ import uuid
 import statistics
 from datetime import datetime, timezone
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
@@ -1189,130 +1189,20 @@ def analytics():
 
 
 # ===========================================================================
-# Visual analytics dashboard  (NEW in Milestone 6)
+# Visual analytics dashboard  (extracted to dashboard.py in this refactor)
 # ===========================================================================
-# A single self-contained HTML page: no templates folder, no static files, no
-# frontend framework. Jinja autoescaping (via render_template_string) keeps any
-# user-supplied audit values safe to display.
-DASHBOARD_TEMPLATE = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Provenance Guard - Dashboard</title>
-  <style>
-    body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-           margin: 0; background: #0f172a; color: #e2e8f0; }
-    .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 60px; }
-    h1 { font-size: 22px; margin: 0 0 4px; }
-    .sub { color: #94a3b8; font-size: 13px; margin-bottom: 28px; }
-    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
-         color: #94a3b8; margin: 32px 0 12px; }
-    .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
-            padding: 16px; }
-    .card .v { font-size: 26px; font-weight: 700; }
-    .card .k { font-size: 12px; color: #94a3b8; margin-top: 4px; }
-    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-    .pill { background: #1e293b; border: 1px solid #334155; border-radius: 10px;
-            padding: 12px 14px; display: flex; justify-content: space-between; }
-    .pill .v { font-weight: 700; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px;
-            background: #1e293b; border-radius: 12px; overflow: hidden; }
-    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #334155; }
-    th { color: #94a3b8; font-weight: 600; background: #172033; }
-    tr:last-child td { border-bottom: none; }
-    .muted { color: #64748b; }
-    code { background: #0b1220; padding: 1px 6px; border-radius: 5px; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <h1>Provenance Guard</h1>
-    <div class="sub">Audit dashboard &middot; read-only view of <code>audit_log.json</code></div>
+# The dashboard HTML, templates, and routes now live in dashboard.py. We
+# register them here, passing in the helpers they need so dashboard.py never
+# imports from app.py (this avoids a circular import). Passing `limiter`
+# preserves the original 30/minute rate limit on the dashboard routes.
+from dashboard import register_dashboard_routes
 
-    <div class="cards">
-      <div class="card"><div class="v">{{ s.total_submissions }}</div><div class="k">Total submissions</div></div>
-      <div class="card"><div class="v">{{ s.average_confidence }}</div><div class="k">Avg confidence (AI-likelihood)</div></div>
-      <div class="card"><div class="v">{{ s.appeal_count }}</div><div class="k">Appeals submitted</div></div>
-      <div class="card"><div class="v">{{ s.verified_creator_count }}</div><div class="k">Verified creators</div></div>
-    </div>
-
-    <h2>Attribution counts</h2>
-    <div class="grid3">
-      <div class="pill"><span>likely_human</span><span class="v">{{ s.attribution_counts.likely_human }}</span></div>
-      <div class="pill"><span>uncertain</span><span class="v">{{ s.attribution_counts.uncertain }}</span></div>
-      <div class="pill"><span>likely_ai</span><span class="v">{{ s.attribution_counts.likely_ai }}</span></div>
-    </div>
-
-    <h2>Appeal status counts</h2>
-    <div class="grid3">
-      <div class="pill"><span>under_review</span><span class="v">{{ s.appeal_status_counts.under_review }}</span></div>
-      <div class="pill"><span>approved</span><span class="v">{{ s.appeal_status_counts.approved }}</span></div>
-      <div class="pill"><span>rejected</span><span class="v">{{ s.appeal_status_counts.rejected }}</span></div>
-      <div class="pill"><span>needs_more_info</span><span class="v">{{ s.appeal_status_counts.needs_more_info }}</span></div>
-    </div>
-
-    <h2>Average signal scores</h2>
-    <div class="grid3">
-      <div class="pill"><span>llm</span><span class="v">{{ s.average_signal_scores.llm }}</span></div>
-      <div class="pill"><span>stylometric</span><span class="v">{{ s.average_signal_scores.stylometric }}</span></div>
-      <div class="pill"><span>template</span><span class="v">{{ s.average_signal_scores.template }}</span></div>
-      <div class="pill"><span>provenance</span><span class="v">{{ s.average_signal_scores.provenance }}</span></div>
-    </div>
-
-    <h2>Recent audit events</h2>
-    <table>
-      <tr><th>Timestamp</th><th>Event</th><th>Content / Creator</th><th>Detail</th><th>Confidence</th></tr>
-      {% for r in recent %}
-      <tr>
-        <td class="muted">{{ r.timestamp }}</td>
-        <td>{{ r.event_type }}</td>
-        <td>{{ r.ident }}</td>
-        <td>{{ r.detail }}</td>
-        <td>{{ r.confidence }}</td>
-      </tr>
-      {% endfor %}
-      {% if not recent %}
-      <tr><td colspan="5" class="muted">No audit events yet.</td></tr>
-      {% endif %}
-    </table>
-  </div>
-</body>
-</html>
-"""
-
-
-@app.route("/dashboard", methods=["GET"])
-@limiter.limit("30 per minute")
-def dashboard():
-    """Render a simple HTML dashboard from the same analytics summary."""
-    summary = calculate_analytics_summary()
-
-    # Build the most recent audit rows (newest first), pulling the most useful
-    # identifier and detail field available for each event type.
-    entries = read_audit_log()
-    recent = []
-    for entry in reversed(entries[-15:]):
-        ident = entry.get("content_id") or entry.get("creator_id") or "-"
-        detail = (
-            entry.get("attribution")
-            or entry.get("appeal_status")
-            or entry.get("verification_method")
-            or "-"
-        )
-        confidence = entry.get("confidence")
-        recent.append(
-            {
-                "timestamp": entry.get("timestamp", "-"),
-                "event_type": entry.get("event_type", "-"),
-                "ident": ident,
-                "detail": detail,
-                "confidence": confidence if confidence is not None else "-",
-            }
-        )
-
-    return render_template_string(DASHBOARD_TEMPLATE, s=summary, recent=recent)
+register_dashboard_routes(
+    app=app,
+    read_audit_log=read_audit_log,
+    calculate_analytics_summary=calculate_analytics_summary,
+    limiter=limiter,
+)
 
 
 # ---------------------------------------------------------------------------
