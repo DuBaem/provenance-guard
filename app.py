@@ -1,5 +1,5 @@
 """
-Provenance Guard - Milestone 5
+Provenance Guard - Milestone 6
 ==============================
 
 A Flask backend that:
@@ -38,7 +38,7 @@ import uuid
 import statistics
 from datetime import datetime, timezone
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
@@ -592,6 +592,75 @@ def find_certificate_for_creator(creator_id):
     return None
 
 
+# ===========================================================================
+# Multi-modal: structured metadata -> readable text  (NEW in Milestone 6)
+# ===========================================================================
+def build_metadata_summary(metadata):
+    """Turn a structured metadata object into a readable text summary.
+
+    Only fields that are present are described, so the four detection signals
+    receive a natural-language paragraph to analyze the same way they analyze
+    a normal text submission. This does NOT change any scoring logic.
+    """
+    parts = []
+
+    title = metadata.get("title")
+    if isinstance(title, str) and title.strip():
+        parts.append(f"Title: {title.strip().rstrip('.')}.")
+
+    description = metadata.get("description")
+    if isinstance(description, str) and description.strip():
+        parts.append(f"Description: {description.strip().rstrip('.')}.")
+
+    if "declared_ai_assistance" in metadata:
+        parts.append(
+            "The creator declared AI assistance."
+            if _safe_bool(metadata.get("declared_ai_assistance"))
+            else "The creator declared no AI assistance."
+        )
+
+    if "ai_generated_draft" in metadata:
+        parts.append(
+            "An AI-generated draft was disclosed."
+            if _safe_bool(metadata.get("ai_generated_draft"))
+            else "No AI-generated draft was disclosed."
+        )
+
+    ai_tool = metadata.get("ai_tool_used")
+    if isinstance(ai_tool, str) and ai_tool.strip():
+        parts.append(f"AI tool used: {ai_tool.strip()}.")
+
+    if "verified_human" in metadata:
+        parts.append(
+            "The creator is marked as verified human."
+            if _safe_bool(metadata.get("verified_human"))
+            else "The creator is not marked as verified human."
+        )
+
+    if "has_version_history" in metadata:
+        parts.append(
+            "Version history is available."
+            if _safe_bool(metadata.get("has_version_history"))
+            else "No version history is available."
+        )
+
+    if metadata.get("draft_count") is not None:
+        parts.append(f"Draft count: {_safe_int(metadata.get('draft_count'))}.")
+
+    if metadata.get("revision_count") is not None:
+        parts.append(f"Revision count: {_safe_int(metadata.get('revision_count'))}.")
+
+    if metadata.get("time_spent_minutes") is not None:
+        parts.append(
+            f"Time spent: {_safe_int(metadata.get('time_spent_minutes'))} minutes."
+        )
+
+    if not parts:
+        return "No descriptive metadata fields were provided."
+
+    return " ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -616,21 +685,41 @@ def submit():
     if not isinstance(content_type, str) or not content_type.strip():
         return error_response("content_type is required.", 400)
 
-    if content_type != "text":
+    if content_type not in ("text", "metadata"):
         return error_response(
-            f"Unsupported content_type '{content_type}'. Only 'text' is supported.",
+            f"Unsupported content_type '{content_type}'. "
+            "Supported types are 'text' and 'metadata'.",
             400,
         )
 
-    if not isinstance(text, str) or not text.strip():
-        return error_response(
-            "text is required and must be a non-empty string for content_type 'text'.",
-            400,
-        )
+    # Decide what text the detection signals will analyze.
+    # - text submissions analyze the submitted text directly.
+    # - metadata submissions analyze a readable summary built from the object.
+    metadata_summary = None  # only populated for metadata submissions
 
-    signal1 = classify_with_groq(text)
-    signal2 = classify_with_stylometrics(text)
-    signal3 = detect_template_patterns(text)
+    if content_type == "text":
+        if not isinstance(text, str) or not text.strip():
+            return error_response(
+                "text is required and must be a non-empty string for "
+                "content_type 'text'.",
+                400,
+            )
+        analysis_text = text
+    else:  # content_type == "metadata"
+        if not isinstance(metadata, dict) or not metadata:
+            return error_response(
+                "metadata is required and must be a non-empty JSON object for "
+                "content_type 'metadata'.",
+                400,
+            )
+        metadata_summary = build_metadata_summary(metadata)
+        analysis_text = metadata_summary
+
+    # Signals 1-3 run on the analysis text (the summary for metadata
+    # submissions); Signal 4 always runs on the original metadata object.
+    signal1 = classify_with_groq(analysis_text)
+    signal2 = classify_with_stylometrics(analysis_text)
+    signal3 = detect_template_patterns(analysis_text)
     signal4 = score_provenance_metadata(metadata)
 
     combined_ai_score = calculate_combined_score(
@@ -706,6 +795,10 @@ def submit():
         "status": "classified",
     }
 
+    # Metadata submissions also expose the generated summary.
+    if metadata_summary is not None:
+        response_body["metadata_summary"] = metadata_summary
+
     append_audit_entry(
         {
             "event_type": "submission_classified",
@@ -713,6 +806,7 @@ def submit():
             "content_id": content_id,
             "creator_id": creator_id,
             "content_type": content_type,
+            "metadata_summary": metadata_summary,
             "attribution": attribution,
             "confidence": confidence,
             "label": label,
@@ -806,7 +900,7 @@ def submit_appeal():
     appeal_status = "under_review"
 
     append_audit_entry(
-    {
+        {
             "event_type": "appeal_submitted",
             "timestamp": timestamp,
             "content_id": content_id,
@@ -988,12 +1082,15 @@ def get_certificate(creator_id):
 
 
 # ===========================================================================
-# Analytics  (NEW in Milestone 5)
+# Analytics  (helper extracted in Milestone 6 so /analytics and /dashboard
+# stay perfectly consistent)
 # ===========================================================================
-@app.route("/analytics", methods=["GET"])
-@limiter.limit("30 per minute")
-def analytics():
-    """Aggregate simple, read-only statistics from the audit log."""
+def calculate_analytics_summary():
+    """Aggregate read-only statistics from the audit log into a plain dict.
+
+    Returns the exact same structure that GET /analytics responds with, so the
+    JSON endpoint and the HTML dashboard never drift apart.
+    """
     entries = read_audit_log()
 
     attribution_counts = {"likely_human": 0, "uncertain": 0, "likely_ai": 0}
@@ -1066,22 +1163,156 @@ def analytics():
         }
     else:
         average_confidence = 0.0
-        average_signal_scores = {"llm": 0.0, "stylometric": 0.0, "template": 0.0, "provenance": 0.0}
+        average_signal_scores = {
+            "llm": 0.0,
+            "stylometric": 0.0,
+            "template": 0.0,
+            "provenance": 0.0,
+        }
 
-    return (
-        jsonify(
+    return {
+        "total_submissions": total_submissions,
+        "attribution_counts": attribution_counts,
+        "average_confidence": average_confidence,
+        "appeal_count": appeal_count,
+        "appeal_status_counts": appeal_status_counts,
+        "verified_creator_count": len(verified_creators),
+        "average_signal_scores": average_signal_scores,
+    }
+
+
+@app.route("/analytics", methods=["GET"])
+@limiter.limit("30 per minute")
+def analytics():
+    """Return the analytics summary as JSON (unchanged structure)."""
+    return jsonify(calculate_analytics_summary()), 200
+
+
+# ===========================================================================
+# Visual analytics dashboard  (NEW in Milestone 6)
+# ===========================================================================
+# A single self-contained HTML page: no templates folder, no static files, no
+# frontend framework. Jinja autoescaping (via render_template_string) keeps any
+# user-supplied audit values safe to display.
+DASHBOARD_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Provenance Guard - Dashboard</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+           margin: 0; background: #0f172a; color: #e2e8f0; }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .sub { color: #94a3b8; font-size: 13px; margin-bottom: 28px; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
+         color: #94a3b8; margin: 32px 0 12px; }
+    .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+            padding: 16px; }
+    .card .v { font-size: 26px; font-weight: 700; }
+    .card .k { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .pill { background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+            padding: 12px 14px; display: flex; justify-content: space-between; }
+    .pill .v { font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px;
+            background: #1e293b; border-radius: 12px; overflow: hidden; }
+    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #334155; }
+    th { color: #94a3b8; font-weight: 600; background: #172033; }
+    tr:last-child td { border-bottom: none; }
+    .muted { color: #64748b; }
+    code { background: #0b1220; padding: 1px 6px; border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Provenance Guard</h1>
+    <div class="sub">Audit dashboard &middot; read-only view of <code>audit_log.json</code></div>
+
+    <div class="cards">
+      <div class="card"><div class="v">{{ s.total_submissions }}</div><div class="k">Total submissions</div></div>
+      <div class="card"><div class="v">{{ s.average_confidence }}</div><div class="k">Avg confidence (AI-likelihood)</div></div>
+      <div class="card"><div class="v">{{ s.appeal_count }}</div><div class="k">Appeals submitted</div></div>
+      <div class="card"><div class="v">{{ s.verified_creator_count }}</div><div class="k">Verified creators</div></div>
+    </div>
+
+    <h2>Attribution counts</h2>
+    <div class="grid3">
+      <div class="pill"><span>likely_human</span><span class="v">{{ s.attribution_counts.likely_human }}</span></div>
+      <div class="pill"><span>uncertain</span><span class="v">{{ s.attribution_counts.uncertain }}</span></div>
+      <div class="pill"><span>likely_ai</span><span class="v">{{ s.attribution_counts.likely_ai }}</span></div>
+    </div>
+
+    <h2>Appeal status counts</h2>
+    <div class="grid3">
+      <div class="pill"><span>under_review</span><span class="v">{{ s.appeal_status_counts.under_review }}</span></div>
+      <div class="pill"><span>approved</span><span class="v">{{ s.appeal_status_counts.approved }}</span></div>
+      <div class="pill"><span>rejected</span><span class="v">{{ s.appeal_status_counts.rejected }}</span></div>
+      <div class="pill"><span>needs_more_info</span><span class="v">{{ s.appeal_status_counts.needs_more_info }}</span></div>
+    </div>
+
+    <h2>Average signal scores</h2>
+    <div class="grid3">
+      <div class="pill"><span>llm</span><span class="v">{{ s.average_signal_scores.llm }}</span></div>
+      <div class="pill"><span>stylometric</span><span class="v">{{ s.average_signal_scores.stylometric }}</span></div>
+      <div class="pill"><span>template</span><span class="v">{{ s.average_signal_scores.template }}</span></div>
+      <div class="pill"><span>provenance</span><span class="v">{{ s.average_signal_scores.provenance }}</span></div>
+    </div>
+
+    <h2>Recent audit events</h2>
+    <table>
+      <tr><th>Timestamp</th><th>Event</th><th>Content / Creator</th><th>Detail</th><th>Confidence</th></tr>
+      {% for r in recent %}
+      <tr>
+        <td class="muted">{{ r.timestamp }}</td>
+        <td>{{ r.event_type }}</td>
+        <td>{{ r.ident }}</td>
+        <td>{{ r.detail }}</td>
+        <td>{{ r.confidence }}</td>
+      </tr>
+      {% endfor %}
+      {% if not recent %}
+      <tr><td colspan="5" class="muted">No audit events yet.</td></tr>
+      {% endif %}
+    </table>
+  </div>
+</body>
+</html>
+"""
+
+
+@app.route("/dashboard", methods=["GET"])
+@limiter.limit("30 per minute")
+def dashboard():
+    """Render a simple HTML dashboard from the same analytics summary."""
+    summary = calculate_analytics_summary()
+
+    # Build the most recent audit rows (newest first), pulling the most useful
+    # identifier and detail field available for each event type.
+    entries = read_audit_log()
+    recent = []
+    for entry in reversed(entries[-15:]):
+        ident = entry.get("content_id") or entry.get("creator_id") or "-"
+        detail = (
+            entry.get("attribution")
+            or entry.get("appeal_status")
+            or entry.get("verification_method")
+            or "-"
+        )
+        confidence = entry.get("confidence")
+        recent.append(
             {
-                "total_submissions": total_submissions,
-                "attribution_counts": attribution_counts,
-                "average_confidence": average_confidence,
-                "appeal_count": appeal_count,
-                "appeal_status_counts": appeal_status_counts,
-                "verified_creator_count": len(verified_creators),
-                "average_signal_scores": average_signal_scores,
+                "timestamp": entry.get("timestamp", "-"),
+                "event_type": entry.get("event_type", "-"),
+                "ident": ident,
+                "detail": detail,
+                "confidence": confidence if confidence is not None else "-",
             }
-        ),
-        200,
-    )
+        )
+
+    return render_template_string(DASHBOARD_TEMPLATE, s=summary, recent=recent)
 
 
 # ---------------------------------------------------------------------------
