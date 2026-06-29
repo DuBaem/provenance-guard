@@ -52,6 +52,50 @@ The system focuses on:
 - python-dotenv
 - Local structured JSON audit log
 
+## Walkthrough Video
+
+Walkthrough video link:
+
+    https://drive.google.com/file/d/16OuR3E87rVczreB4EiLC6sacQAk3ht7L/view?usp=sharing
+
+The walkthrough video is a short portfolio tour of Provenance Guard. It shows the project working end-to-end, includes live tests, and explains the main design decisions behind the backend.
+
+The video includes:
+
+- Starting the Flask backend locally with `python app.py`
+- Opening the visual analytics dashboard at `GET /dashboard`
+- Reviewing dashboard metrics such as total submissions, attribution counts, appeal counts, verified creators, and average signal scores
+- Clicking a dashboard submission row to open `GET /dashboard/submission/<content_id>`
+- Reviewing the detailed classification evidence for one submission
+- Explaining the four-signal ensemble detection system:
+  - Groq LLM classification
+  - Stylometric heuristics
+  - Repetition and template pattern detection
+  - Provenance metadata scoring
+- Running a live `POST /submit` test with `content_type: "metadata"`
+- Showing the metadata response, including:
+  - `content_id`
+  - `attribution`
+  - `confidence`
+  - `label`
+  - `metadata_summary`
+  - `signals`
+  - `safety`
+- Calling `GET /analytics` to confirm that audit-log metrics are returned as JSON
+- Refreshing the dashboard to show that new submissions are reflected in the visual dashboard
+- Testing an invalid detail page and confirming that it returns a readable `404 NOT FOUND`
+- Briefly explaining the appeals workflow with `POST /appeal` and `PATCH /appeal/<content_id>`
+- Briefly explaining verified human provenance certificates with `POST /verify-human` and `GET /certificate/<creator_id>`
+- Mentioning rate limiting with Flask-Limiter and structured audit logging through `audit_log.json`
+
+The walkthrough also points out the completed stretch features:
+
+1. Ensemble detection with four weighted signals
+2. Verified human provenance certificates
+3. Visual analytics dashboard with clickable submission detail pages
+4. Multi-modal structured metadata support
+
+
 ## Setup Instructions
 
 Clone the repository, create a virtual environment, install dependencies, and add a `.env` file with a Groq API key.
@@ -921,15 +965,12 @@ The stretch features also shaped the final design. The certificate feature gives
 
 I used AI tools as coding and planning assistants during this project. I used Claude to generate focused code drafts for specific backend changes, such as route handlers, helper functions, dashboard rendering, and metadata support. I reviewed the output, tested it locally, and made corrections before committing.
 
-I also used ChatGPT as a step-by-step engineering guide to break the project into milestones, design tests, review outputs, and decide when to commit. I did not accept AI-generated code blindly. Each major change was tested with local terminal commands before being committed.
 
 Specific AI-assisted instances:
 
 1. I asked Claude to draft the initial Flask `/submit` route and Groq classification function. Claude produced a working starting point, but I tested the Groq signal separately, verified the audit log behavior, and later replaced placeholder confidence and label logic with the real ensemble scoring and label system.
 
 2. I asked Claude to add the appeals workflow, certificate endpoints, rate limiting, and analytics endpoint. I reviewed the generated code and added fixes, including a JSON `429` rate-limit handler and extra audit-log fields so appeal entries clearly included `status`, `appeal_status`, `content_status`, `creator_reasoning`, and `appeal_reasoning`.
-
-3. I asked Claude to add Milestone 6 stretch code for `/dashboard` and `content_type: "metadata"`. I reviewed the code before adding it, removed an unused import, corrected the Milestone docstring, cleaned up indentation, compiled the file, and tested the dashboard and metadata submission path locally.
 
 Human decisions included:
 
@@ -939,24 +980,6 @@ Human decisions included:
 - Using structured metadata instead of image upload for the multi-modal stretch
 - Verifying all test outputs before committing
 
-## Walkthrough Video
-
-Walkthrough video link:
-
-    TODO: Add walkthrough video link here.
-
-The walkthrough should show:
-
-1. Starting the Flask app
-2. Submitting text content
-3. Seeing the transparency label and confidence score
-4. Submitting an appeal
-5. Reviewing an appeal
-6. Issuing a verified human certificate
-7. Submitting metadata content
-8. Viewing `/analytics`
-9. Viewing `/dashboard`
-10. Showing the audit log evidence
 
 ## Future Improvements
 
