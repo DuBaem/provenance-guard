@@ -233,6 +233,43 @@ Dashboard route test:
     Content-Type: text/html; charset=utf-8
     Content-Length: 7017
 
+### GET /dashboard/submission/<content_id>
+
+Displays a detailed browser view for one classified submission.
+
+Example URL:
+
+    http://localhost:5000/dashboard/submission/b1b27806-b1ef-4f85-849f-fd7cc31afa80
+
+The detail page shows:
+
+- content ID
+- creator ID
+- content type
+- timestamp
+- attribution result
+- confidence score
+- transparency label
+- metadata summary, if present
+- certificate information, if present
+- safety adjustment information
+- individual signal scores
+- LLM reasoning
+- stylometric reasoning and metrics
+- template pattern evidence
+- provenance summary
+- related appeal submissions
+- related appeal review decisions
+- link back to the dashboard
+
+Invalid content IDs return a readable browser page with a `404 NOT FOUND` status instead of crashing.
+
+Test evidence:
+
+    /dashboard/submission/not-a-real-id -> 404 NOT FOUND
+
+The dashboard now links submission rows to this detail page when a row has a `content_id`.
+
 ## Architecture
 
 The system is organized around a request pipeline, a detection pipeline, an audit trail, and review workflows. The same audit log powers `/log`, `/analytics`, and `/dashboard`.
@@ -757,6 +794,16 @@ After testing metadata support, `/analytics` updated to:
 
 This confirms that the dashboard and analytics endpoint read from the same audit log.
 
+The dashboard was later improved so that recent submission rows are clickable. Clicking a submission opens:
+
+    GET /dashboard/submission/<content_id>
+
+The detail page was tested successfully in the browser. A fake content ID was also tested and returned:
+
+    HTTP/1.1 404 NOT FOUND
+
+After the dashboard refactor, `/submit` was tested again with a metadata submission. The submission succeeded and analytics updated from `32` total submissions to `33`, confirming that the refactor did not break the backend API.
+
 ## Multi-Modal Metadata Support
 
 Provenance Guard supports a second content type:
@@ -830,8 +877,11 @@ The backend supports:
 
     GET /analytics
     GET /dashboard
+    GET /dashboard/submission/<content_id>
 
 `GET /analytics` returns structured JSON. `GET /dashboard` provides a browser-based visual dashboard for demo and review.
+
+The dashboard code was moved into a separate `dashboard.py` file so `app.py` can stay focused on backend API routes. The dashboard now includes clickable submission detail pages for reviewing classification evidence.
 
 ### Multi-Modal Structured Metadata Support
 
